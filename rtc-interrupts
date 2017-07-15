@@ -1,0 +1,174 @@
+/*
+ *
+ * oled, DHT, Timer with 2 interrupts, AM312 Mini IR Infrared Pyroelectric PIR Body Motion Human Sensor Detector Module
+ * Interrupt one is for time (1sec)
+ * Interrupt two is for Temp and humidity. (1min)
+ * In the main loop the oled is always refreshed.
+ *
+ */
+
+#define INTERRUPT_PIN 2
+#define PIRPIN 5
+#define MICPIN 3
+#define countof(a) (sizeof(a) / sizeof(a[0]))
+
+#include "U8glib.h"
+#include "DHT.h"
+#include <Wire.h> // must be included here so that Arduino library object file references work
+#include <RtcDS3231.h>
+#include <avr/interrupt.h>        // Library to use interrupt
+
+RtcDS3231<TwoWire> Rtc(Wire);
+DHT dht;
+U8GLIB_SSD1306_128X64 u8g(12, 11, 8, 9, 10);
+
+volatile bool interruptFlag = false;
+
+volatile int lastMICsensorState = 1;  // previous sensor state
+volatile int MICsensorState = 0;   // current state of the button
+
+int yPos = 0;
+char datestr[6];
+char timestr[9];
+char tempBuffer[5];
+char humidBuffer[5];
+
+int pirValue=0;
+int pirStatus=0;
+int micValue=0;
+int micStatus=0;
+
+void setup() {
+  Rtc.Begin();
+  dht.setup(4); // data pin 4
+
+  u8g.setFont(u8g_font_freedoomr25n);
+  u8g.setColorIndex(1); // Instructs the display to draw with a pixel on.
+
+  // Turn off DS3231 32KHz pin
+  Rtc.Enable32kHzPin(false);
+  // Set the DS3231 SQW pin to be triggered whenever one of the two alarms expires
+  Rtc.SetSquareWavePin(DS3231SquareWavePin_ModeAlarmBoth);
+  // Alarm 1 can be triggered at most once per second:
+  // we will use it to print a timestamp every second
+  DS3231AlarmOne alarm1(0, 0, 0, 0, DS3231AlarmOneControl_OncePerSecond);
+  Rtc.SetAlarmOne(alarm1);
+  // Alarm 2 can be triggered at most once per minute:
+  // we will use it to print ambient temperature every minute (D3231 has a temperature sensor!)
+  DS3231AlarmTwo alarm2(0, 0, 0, DS3231AlarmTwoControl_OncePerMinute);
+  Rtc.SetAlarmTwo(alarm2);
+  // Throw away any old alarm state before we run
+  Rtc.LatchAlarmsTriggeredFlags();
+  // Associate the interrupt service routine to a FALLING edge on the board pin connected to the DS3231 SQW pin
+  attachInterrupt(digitalPinToInterrupt(INTERRUPT_PIN), InterruptServiceRoutine, FALLING);
+
+  pinMode(PIRPIN, INPUT);
+  pinMode(MICPIN, INPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  attachInterrupt(digitalPinToInterrupt(MICPIN),wakeUpNow, CHANGE);
+}
+
+void loop() {
+  interrupts();  //enable interrupts for Due and Nano V3
+
+  if (MICsensorState != lastMICsensorState) {
+    if (MICsensorState == 0) {
+      digitalWrite(LED_BUILTIN, LOW);
+      //Serial.print("Sleeping-");            // enable for debugging
+      //Serial.println(PIRsensorState);   // read status of interrupt pin
+    } else {
+     digitalWrite(LED_BUILTIN, HIGH);
+     //Serial.print("Awake-");    // enable for debugging
+     //Serial.println(PIRsensorState);  // read status of interrupt pin   enable for debugging
+    }
+  }
+  lastMICsensorState = MICsensorState;    // reset lastinterrupt state
+  MICsensorState = 0;
+
+
+  if (interruptFlag) {
+      interruptFlag = false;
+
+      // Get the DS3231 Alarm Flag
+      // then allows for others to trigger again
+      DS3231AlarmFlag alarm_flag = Rtc.LatchAlarmsTriggeredFlags();
+
+      // See if an Alarm1 was triggered. If yes, we print out a timestamp
+      if (alarm_flag & DS3231AlarmFlag_Alarm1) {
+        if (Rtc.IsDateTimeValid()) {
+          RtcDateTime dt = Rtc.GetDateTime();
+
+          snprintf_P(datestr,
+                    countof(datestr),
+                    PSTR("%02u/%02u"),
+                    dt.Day(),
+                    dt.Month());
+
+          snprintf_P(timestr,
+                    countof(timestr),
+                    PSTR("%02u:%02u:%02u"),
+                    dt.Hour(),
+                    dt.Minute(),
+                    dt.Second() );
+        }
+      }
+
+      if (alarm_flag & DS3231AlarmFlag_Alarm2) {
+        dtostrf(dht.getTemperature(), 3, 0, tempBuffer);
+        dtostrf(dht.getHumidity(), 3, 0, humidBuffer);
+      }
+
+  }
+
+  //PIR CODE
+  pirValue = digitalRead(PIRPIN);
+  if (pirValue == LOW && pirStatus !=1) {
+    //standby
+    digitalWrite(LED_BUILTIN, LOW);
+    pirStatus = 1;
+  } else if (pirValue == HIGH && pirStatus !=2) {
+    //motion detected
+    digitalWrite(LED_BUILTIN, HIGH);
+    pirStatus = 2;
+  }
+
+//  micValue = digitalRead(MICPIN);
+//  //mic check
+//  if (micValue == LOW && micStatus !=1 ) {
+//    //standby
+//    digitalWrite(LED_BUILTIN, LOW);
+//    micStatus = 1;
+//  } else if (micValue == HIGH && micStatus !=2) {
+//    //motion detected
+//    digitalWrite(LED_BUILTIN, HIGH);
+//    micStatus = 2;
+//  }
+
+  //repaint oled
+  u8g.firstPage();
+  do {
+    draw();
+  } while( u8g.nextPage() );
+}
+
+void InterruptServiceRoutine() {
+  // We just set a flag that will be checked later in the main loop (where real action will take place)
+  // and increment a counter to be displayed there
+  interruptFlag = true;
+}
+
+void wakeUpNow(){                  // Interrupt service routine or ISR
+  MICsensorState = !lastMICsensorState;    // we negate previous state and assign to current state
+}
+
+void draw() {
+  u8g.setFont(u8g_font_unifont);
+  u8g.drawStr(78,30,datestr);
+  u8g.drawStr(0,15,"\260C");
+  u8g.drawStr(65,45,timestr);
+  u8g.drawStr(5,63,"%");
+
+  u8g.setFont(u8g_font_freedoomr25n);
+  u8g.drawStr(10, 30, tempBuffer);
+  u8g.drawStr(10, 65, humidBuffer);
+}
