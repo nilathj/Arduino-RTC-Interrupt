@@ -3,7 +3,7 @@ Arduino RTC external interrupt and pin change interrupt driven programming using
 
 Fritzing Diagram
 -----------------
-![Arduino RTC interrupt](fritzing/wiringDigram.png)
+![Arduino RTC interrupt](fritzing/wiringDiagram.png)
 
 Overview
 --------
